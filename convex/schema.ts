@@ -442,6 +442,23 @@ export default defineSchema({
     .index("by_status", ["status"])
     .index("by_sentAt", ["sentAt"]),
 
+  // SMS Logs
+  smsLogs: defineTable({
+    supplierId: v.id("suppliers"),
+    orderId: v.id("orders"),
+    phoneNumber: v.string(),
+    messageId: v.string(),
+    status: v.string(),
+    cost: v.number(),
+    message: v.string(),
+    error: v.optional(v.string()),
+    timestamp: v.number(),
+  })
+    .index("by_supplierId", ["supplierId"])
+    .index("by_orderId", ["orderId"])
+    .index("by_status", ["status"])
+    .index("by_timestamp", ["timestamp"]),
+
   // System Config
   systemConfig: defineTable({
     key: v.string(),

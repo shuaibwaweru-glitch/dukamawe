@@ -3,6 +3,7 @@ import { SignedIn, SignedOut } from "@clerk/clerk-react";
 import Login from './pages/auth/Login';
 import SignUpPage from './pages/auth/SignUp';
 import Dashboard from './pages/Dashboard';
+import CreateOrder from './pages/orders/CreateOrder';
 
 function App() {
   return (
@@ -19,6 +20,20 @@ function App() {
             <>
               <SignedIn>
                 <Dashboard />
+              </SignedIn>
+              <SignedOut>
+                <Navigate to="/sign-in" replace />
+              </SignedOut>
+            </>
+          }
+        />
+        
+        <Route
+          path="/orders/create"
+          element={
+            <>
+              <SignedIn>
+                <CreateOrder />
               </SignedIn>
               <SignedOut>
                 <Navigate to="/sign-in" replace />

@@ -1,7 +1,9 @@
 import { UserButton, useUser } from "@clerk/clerk-react";
+import { useNavigate } from "react-router-dom";
 
 export default function Dashboard() {
   const { user } = useUser();
+  const navigate = useNavigate();
 
   return (
     <div style={{
@@ -65,7 +67,7 @@ export default function Dashboard() {
             Welcome back, {user?.firstName}! 👋
           </h2>
           <p style={{ color: '#666', fontSize: '1rem' }}>
-            Your account is ready. Authentication is working perfectly!
+            Your account is ready. Let's start building!
           </p>
         </div>
 
@@ -106,10 +108,15 @@ export default function Dashboard() {
                 Quick Actions
               </h3>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <ActionButton icon="➕" text="New Order" primary />
-                <ActionButton icon="📍" text="Add Site" />
-                <ActionButton icon="📅" text="Schedule Delivery" />
-                <ActionButton icon="📊" text="View Reports" />
+                <ActionButton 
+                  icon="➕" 
+                  text="New Order" 
+                  primary 
+                  onClick={() => navigate('/orders/create')}
+                />
+                <ActionButton icon="📍" text="Add Site" onClick={() => alert('Coming soon!')} />
+                <ActionButton icon="📅" text="Schedule Delivery" onClick={() => alert('Coming soon!')} />
+                <ActionButton icon="📊" text="View Reports" onClick={() => alert('Coming soon!')} />
               </div>
             </div>
 
@@ -135,16 +142,19 @@ export default function Dashboard() {
               }}>
                 <p style={{ fontSize: '3rem', marginBottom: '1rem' }}>📦</p>
                 <p style={{ marginBottom: '1rem' }}>No orders yet</p>
-                <button style={{
-                  background: '#F57C00',
-                  color: 'white',
-                  border: 'none',
-                  padding: '0.75rem 2rem',
-                  borderRadius: '8px',
-                  fontWeight: 'bold',
-                  cursor: 'pointer',
-                  fontSize: '1rem'
-                }}>
+                <button 
+                  onClick={() => navigate('/orders/create')}
+                  style={{
+                    background: '#F57C00',
+                    color: 'white',
+                    border: 'none',
+                    padding: '0.75rem 2rem',
+                    borderRadius: '8px',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    fontSize: '1rem'
+                  }}
+                >
                   Create Your First Order
                 </button>
               </div>
@@ -160,14 +170,14 @@ export default function Dashboard() {
               color="#4CAF50"
             />
             <StatusCard
-              title="🚀 Next Steps"
-              description="Ready to build order creation & tracking"
-              color="#2196F3"
+              title="🚀 Order System Ready"
+              description="Material catalog and order creation live!"
+              color="#F57C00"
             />
             <StatusCard
               title="📦 Database Ready"
               description="Convex schema deployed and ready"
-              color="#F57C00"
+              color="#2196F3"
             />
           </div>
         </div>
@@ -200,23 +210,26 @@ function StatCard({ title, value, icon, color }: any) {
   );
 }
 
-function ActionButton({ icon, text, primary = false }: any) {
+function ActionButton({ icon, text, primary = false, onClick }: any) {
   return (
-    <button style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: '0.75rem',
-      padding: '1rem',
-      borderRadius: '10px',
-      border: primary ? 'none' : '2px solid #e0e0e0',
-      background: primary ? 'linear-gradient(135deg, #F57C00 0%, #FF9800 100%)' : 'white',
-      color: primary ? 'white' : '#333',
-      fontWeight: '600',
-      fontSize: '0.95rem',
-      cursor: 'pointer',
-      transition: 'all 0.2s',
-      width: '100%'
-    }}>
+    <button 
+      onClick={onClick}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.75rem',
+        padding: '1rem',
+        borderRadius: '10px',
+        border: primary ? 'none' : '2px solid #e0e0e0',
+        background: primary ? 'linear-gradient(135deg, #F57C00 0%, #FF9800 100%)' : 'white',
+        color: primary ? 'white' : '#333',
+        fontWeight: '600',
+        fontSize: '0.95rem',
+        cursor: 'pointer',
+        transition: 'all 0.2s',
+        width: '100%'
+      }}
+    >
       <span style={{ fontSize: '1.5rem' }}>{icon}</span>
       <span>{text}</span>
     </button>
