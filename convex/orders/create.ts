@@ -32,20 +32,14 @@ export const createOrder = mutation({
   args: {
     // Buyer info
     buyerClerkId: v.string(),
-    buyerName: v.string(),
-    buyerEmail: v.string(),
-    buyerPhone: v.optional(v.string()),
     
     // Material info
-    materialId: v.string(),
-    materialName: v.string(),
-    materialCategory: v.string(),
-    specification: v.string(),
+    materialId: v.id("materials"),
     quantity: v.number(),
-    unit: v.string(),
     
     // Delivery info
-    siteName: v.string(),
+    deliveryAddressId: v.optional(v.string()),
+    siteName: v.optional(v.string()),
     siteAddress: v.string(),
     deliveryDate: v.string(),
     urgencyLevel: v.union(
@@ -55,32 +49,111 @@ export const createOrder = mutation({
     ),
     instructions: v.optional(v.string()),
     
-    // Pricing
-    materialCost: v.number(),
-    transportCost: v.number(),
-    urgencyPremium: v.number(),
-    platformFee: v.number(),
-    vat: v.number(),
-    total: v.number(),
-    depositAmount: v.number(),
-    balanceAmount: v.number(),
+    // Location coordinates
+    siteLatitude: v.number(),
+    siteLongitude: v.number(),
+    
+    // Optional: Custom pricing
+    customUnitPrice: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const orderNumber = generateOrderNumber();
     const releaseCode = generateReleaseCode();
     const now = Date.now();
 
-    // Calculate urgency multiplier and SLA
+    // 1. VALIDATE MATERIAL
+    const material = await ctx.db.get(args.materialId);
+    if (!material) {
+      throw new Error("Material not found");
+    }
+    
+    if (material.stock < args.quantity) {
+      throw new Error(`Insufficient stock. Available: ${material.stock}, Requested: ${args.quantity}`);
+    }
+    
+    if (args.quantity < material.minOrderQuantity) {
+      throw new Error(`Minimum order quantity is ${material.minOrderQuantity}`);
+    }
+
+    // 2. GET BUYER
+    const buyer = await ctx.db
+      .query("buyers")
+      .withIndex("by_clerkId", q => q.eq("clerkId", args.buyerClerkId))
+      .first();
+      
+    if (!buyer) {
+      throw new Error("Buyer profile not found. Please complete registration.");
+    }
+    
+    // Get delivery address
+    let deliveryAddress = buyer.shippingAddresses.find(addr => 
+      args.deliveryAddressId ? addr.id === args.deliveryAddressId : addr.isDefault
+    );
+    
+    if (!deliveryAddress && !args.siteAddress) {
+      throw new Error("Delivery address required");
+    }
+
+    // 3. FIND SUPPLIER WITH INVENTORY
+    const supplierInventories = await ctx.db
+      .query("supplierInventory")
+      .withIndex("by_materialId", q => q.eq("materialId", args.materialId))
+      .collect();
+    
+    let bestSupplier = null;
+    let bestSupplierInventory = null;
+    let minDistance = Infinity;
+    
+    for (const inventory of supplierInventories) {
+      if (inventory.currentStock >= args.quantity && inventory.available) {
+        const supplier = await ctx.db.get(inventory.supplierId);
+        if (supplier && supplier.status === "active") {
+          const distance = calculateDistance(
+            supplier.location.lat,
+            supplier.location.lng,
+            args.siteLatitude,
+            args.siteLongitude
+          );
+          
+          if (distance <= supplier.deliveryRadius && distance < minDistance) {
+            minDistance = distance;
+            bestSupplier = supplier;
+            bestSupplierInventory = inventory;
+          }
+        }
+      }
+    }
+    
+    if (!bestSupplier || !bestSupplierInventory) {
+      throw new Error("No available supplier with sufficient stock within delivery radius");
+    }
+    
+    // 4. CALCULATE PRICING
+    const unitPrice = args.customUnitPrice || bestSupplierInventory.pricePerUnit;
+    const materialCost = unitPrice * args.quantity;
+    const transportCost = bestSupplier.baseTransportCost + (minDistance * bestSupplier.perKmCost);
+    
+    // 5. CALCULATE URGENCY
     const urgencyConfig = {
-      standard: { multiplier: 1, sla: 72 * 60 * 60 * 1000 }, // 72 hours
-      priority: { multiplier: 1.15, sla: 24 * 60 * 60 * 1000 }, // 24 hours
-      emergency: { multiplier: 1.3, sla: 8 * 60 * 60 * 1000 }, // 8 hours
+      standard: { multiplier: 1, sla: 72 },
+      priority: { multiplier: 1.15, sla: 24 },
+      emergency: { multiplier: 1.3, sla: 8 },
     };
-
+    
     const urgencyData = urgencyConfig[args.urgencyLevel];
-    const deadline = now + urgencyData.sla;
-
-    // Create the order
+    const urgencyPremium = materialCost * (urgencyData.multiplier - 1);
+    const deadline = now + (urgencyData.sla * 60 * 60 * 1000);
+    
+    // 6. CALCULATE FINAL PRICING
+    const subtotal = materialCost + transportCost + urgencyPremium;
+    const platformFee = subtotal * 0.05;
+    const subtotalWithFee = subtotal + platformFee;
+    const vat = subtotalWithFee * 0.16;
+    const total = subtotalWithFee + vat;
+    const depositAmount = total * 0.4;
+    const balanceAmount = total * 0.6;
+    
+    // 7. CREATE ORDER
     const orderId = await ctx.db.insert("orders", {
       orderNumber,
       status: "pending_payment",
@@ -91,60 +164,86 @@ export const createOrder = mutation({
         sla: urgencyData.sla,
         deadline,
         breached: false,
+        breachNotified: false,
       },
 
       buyer: {
-        buyerId: "temp_buyer_id" as any, // Will be updated with real buyer system
-        userId: "temp_user_id" as any,
-        name: args.buyerName,
-        phone: args.buyerPhone || "",
-        email: args.buyerEmail,
+        buyerId: buyer._id,
+        userId: buyer.userId,
+        clerkId: buyer.clerkId,
+        name: buyer.fullName,
+        phone: buyer.phone,
+        email: buyer.email,
+        companyId: buyer.companyId,
         site: {
-          siteId: "temp_site_id" as any,
-          name: args.siteName,
-          location: { lat: -1.286389, lng: 36.817223 }, // Default Nairobi coordinates
-          address: args.siteAddress,
-          contact: {
-            name: args.buyerName,
-            phone: args.buyerPhone || "",
+          siteId: undefined as any, // Optional field
+          name: args.siteName || deliveryAddress?.name || "Delivery Site",
+          location: {
+            lat: args.siteLatitude,
+            lng: args.siteLongitude,
           },
-          instructions: args.instructions,
+          address: args.siteAddress || deliveryAddress?.address || "",
+          contact: {
+            name: buyer.fullName,
+            phone: buyer.phone,
+          },
+          instructions: args.instructions || "",
         },
       },
 
       material: {
-        type: args.materialName,
-        category: args.materialCategory,
+        materialId: args.materialId,
+        name: material.name,
+        category: material.category,
         specifications: {
-          grade: args.specification,
-          unit: args.unit,
+          grade: material.specifications[0]?.value || "Standard",
+          unit: material.unit,
         },
         quantity: args.quantity,
-        unit: args.unit,
-        description: `${args.specification} ${args.materialName}`,
+        unit: material.unit,
+        description: material.description,
+        unitPrice: unitPrice,
       },
 
+      supplier: {
+        supplierId: bestSupplier._id,
+        businessName: bestSupplier.businessName,
+        phone: bestSupplier.phone,
+        location: bestSupplier.location,
+        distance: minDistance,
+        rating: bestSupplier.rating,
+        assignedAt: now,
+      },
+
+      driver: undefined as any, // Optional field
+
       pricing: {
-        materialCost: args.materialCost,
-        transportCost: args.transportCost,
-        urgencyPremium: args.urgencyPremium,
-        subtotal: args.materialCost + args.transportCost + args.urgencyPremium,
-        platformFee: args.platformFee,
+        materialCost,
+        transportCost,
+        urgencyPremium,
+        subtotal,
+        platformFee,
         platformFeeRate: 0.05,
-        subtotalWithFee: args.materialCost + args.transportCost + args.urgencyPremium + args.platformFee,
-        vat: args.vat,
-        total: args.total,
-        depositAmount: args.depositAmount,
-        balanceAmount: args.balanceAmount,
+        subtotalWithFee,
+        vat,
+        vatRate: 0.16,
+        total,
+        depositAmount,
+        balanceAmount,
         currency: "KES",
+        discount: 0,
       },
 
       payment: {
         depositStatus: "pending",
+        depositAmount,
+        depositDueDate: now + (24 * 60 * 60 * 1000),
         depositPaidAt: null,
         depositTransactionId: null,
         depositMpesaRef: null,
         balanceStatus: "pending",
+        balanceAmount,
+        balanceDueDate: null,
         balancePaidAt: null,
         balanceTransactionId: null,
         balanceMpesaRef: null,
@@ -154,8 +253,27 @@ export const createOrder = mutation({
         payoutDetails: null,
       },
 
+      delivery: {
+        scheduledDate: args.deliveryDate,
+        actualDate: null,
+        status: "pending",
+        assignedSupplier: bestSupplier._id,
+        assignedDriver: null,
+        vehicle: null,
+        trackingNumber: null,
+        estimatedTime: null,
+        actualTime: null,
+        distance: minDistance,
+        supplierLocation: bestSupplier.location,
+        siteLocation: {
+          lat: args.siteLatitude,
+          lng: args.siteLongitude,
+        },
+      },
+
       timeline: {
         createdAt: now,
+        lastUpdated: now,
         status: "pending_payment",
         events: [
           {
@@ -163,9 +281,17 @@ export const createOrder = mutation({
             timestamp: now,
             description: "Order created, awaiting deposit payment",
             actor: "system",
+            metadata: {
+              orderNumber,
+              releaseCode,
+              material: material.name,
+              quantity: args.quantity,
+            },
           },
         ],
       },
+
+      tracking: undefined as any, // Optional field
 
       proof: {
         releaseCode,
@@ -174,95 +300,252 @@ export const createOrder = mutation({
         loadPhoto: null,
         deliveryPhoto: null,
         signature: null,
+        proofOfDelivery: undefined as any, // Optional field
       },
 
-      notifications: [],
-      metadata: {
-        version: "1.0",
-        source: "web",
+      ratings: undefined as any, // Optional field
+      dispute: undefined as any, // Optional field
+      scheduledOrderId: undefined as any, // Optional field
+      corporateAccountId: undefined as any, // Optional field
+
+      notifications: {
+        sent: [],
+        pending: ["deposit_reminder", "order_confirmation"],
+        preferences: {
+          email: true,
+          sms: true,
+          push: true,
+        },
       },
+
+      metadata: {
+        version: "2.0",
+        source: "web",
+        ipAddress: null,
+        userAgent: null,
+        createdBy: args.buyerClerkId,
+        materialSnapshot: {
+          basePrice: material.basePrice,
+          stock: material.stock,
+          minOrderQuantity: material.minOrderQuantity,
+        },
+      },
+
+      deletedAt: null,
     });
 
-    // Create initial transaction record
-    await ctx.db.insert("transactions", {
+    // 8. UPDATE MATERIAL STOCK
+    await ctx.db.patch(args.materialId, {
+      stock: material.stock - args.quantity,
+      updatedAt: now,
+    });
+
+    // 9. UPDATE SUPPLIER INVENTORY
+    await ctx.db.patch(bestSupplierInventory._id, {
+      currentStock: bestSupplierInventory.currentStock - args.quantity,
+      lastUpdated: now,
+    });
+
+    // 10. UPDATE BUYER STATS
+    await ctx.db.patch(buyer._id, {
+      totalOrders: buyer.totalOrders + 1,
+      totalSpent: buyer.totalSpent + total,
+      lastOrderAt: now,
+    });
+
+    // 11. CREATE TRANSACTION RECORD
+    const depositTransactionId = await ctx.db.insert("transactions", {
       orderId,
+      orderNumber,
       type: "deposit",
       direction: "incoming",
-      amount: args.depositAmount,
+      amount: depositAmount,
       currency: "KES",
       status: "pending",
       paymentMethod: "mpesa",
-      fee: args.platformFee * 0.5, // 50% of platform fee for deposit
-      netAmount: args.depositAmount - (args.platformFee * 0.5),
+      fee: platformFee * 0.5,
+      netAmount: depositAmount - (platformFee * 0.5),
       description: `Deposit for order ${orderNumber}`,
       metadata: {
         orderNumber,
         releaseCode,
+        urgencyLevel: args.urgencyLevel,
+        buyerEmail: buyer.email,
+        material: material.name,
+        supplier: bestSupplier.businessName,
       },
+      createdAt: now,
+      processedAt: null,
+      completedAt: null,
+      fromUser: buyer.userId,
+      toUser: undefined as any,
+      mpesaDetails: undefined as any,
+      bankDetails: undefined as any,
+    });
+
+    // 12. UPDATE ORDER WITH TRANSACTION ID
+    await ctx.db.patch(orderId, {
+      payment: {
+        ...(await ctx.db.get(orderId))!.payment,
+        depositTransactionId,
+      },
+    });
+
+    // 13. CREATE NOTIFICATION
+    await ctx.db.insert("notifications", {
+      userId: buyer.userId,
+      orderId,
+      orderNumber,
+      type: "order_created",
+      title: "Order Created Successfully",
+      body: `Your order ${orderNumber} has been created. Please proceed with the deposit payment of KES ${depositAmount.toLocaleString()}.`,
+      data: {
+        orderId: orderId,
+        amount: depositAmount,
+        paymentLink: `/payment/${orderId}/deposit`,
+      },
+      channels: buyer.notificationPreferences.email ? ["email"] : [],
+      priority: "high",
+      status: "pending",
+      scheduledAt: now,
+      sentAt: null,
+      readAt: null,
+      language: "en",
+      expiresAt: now + (7 * 24 * 60 * 60 * 1000), // 7 days
     });
 
     return {
       success: true,
       orderId,
       orderNumber,
-      depositAmount: args.depositAmount,
+      depositAmount,
+      balanceAmount,
+      total,
       releaseCode,
+      transactionId: depositTransactionId,
+      supplier: {
+        name: bestSupplier.businessName,
+        distance: `${minDistance.toFixed(1)} km`,
+        rating: bestSupplier.rating,
+        phone: bestSupplier.phone,
+      },
       message: "Order created successfully. Please proceed to payment.",
+      nextSteps: [
+        `Complete deposit payment of KES ${depositAmount.toLocaleString()} within 24 hours`,
+        `Balance of KES ${balanceAmount.toLocaleString()} due upon delivery`,
+        `Keep your release code (${releaseCode}) safe for delivery verification`,
+      ],
     };
   },
 });
 
-export const calculatePricing = query({
+export const calculateOrderPrice = query({
   args: {
-    materialPrice: v.number(),
+    materialId: v.id("materials"),
     quantity: v.number(),
     urgencyLevel: v.union(
       v.literal("standard"),
       v.literal("priority"),
       v.literal("emergency")
     ),
-    distance: v.optional(v.number()), // Distance in km
+    siteLatitude: v.number(),
+    siteLongitude: v.number(),
   },
   handler: async (ctx, args) => {
-    const materialCost = args.materialPrice * args.quantity;
+    const material = await ctx.db.get(args.materialId);
+    if (!material) throw new Error("Material not found");
     
-    // Transport cost calculation
-    const baseTransportCost = 5000; // Base cost in KES
-    const perKmCost = 150; // Cost per km
-    const transportCost = args.distance 
-      ? baseTransportCost + (args.distance * perKmCost)
-      : baseTransportCost + (10 * perKmCost); // Default 10km
+    // Find supplier inventory
+    const supplierInventories = await ctx.db
+      .query("supplierInventory")
+      .withIndex("by_materialId", q => q.eq("materialId", args.materialId))
+      .collect();
     
-    // Urgency multiplier
-    const urgencyMultiplier = {
-      standard: 1,
-      priority: 1.15,
-      emergency: 1.3,
+    let minDistance = Infinity;
+    let nearestSupplier = null;
+    let nearestInventory = null;
+    
+    for (const inventory of supplierInventories) {
+      if (inventory.currentStock >= args.quantity && inventory.available) {
+        const supplier = await ctx.db.get(inventory.supplierId);
+        if (supplier && supplier.status === "active") {
+          const distance = calculateDistance(
+            supplier.location.lat,
+            supplier.location.lng,
+            args.siteLatitude,
+            args.siteLongitude
+          );
+          
+          if (distance <= supplier.deliveryRadius && distance < minDistance) {
+            minDistance = distance;
+            nearestSupplier = supplier;
+            nearestInventory = inventory;
+          }
+        }
+      }
+    }
+    
+    if (!nearestSupplier || !nearestInventory) {
+      return {
+        available: false,
+        message: "No available supplier with sufficient stock within delivery radius",
+        material: material.name,
+        requestedQuantity: args.quantity,
+      };
+    }
+    
+    // Calculate pricing
+    const unitPrice = nearestInventory.pricePerUnit;
+    const materialCost = unitPrice * args.quantity;
+    const transportCost = nearestSupplier.baseTransportCost + (minDistance * nearestSupplier.perKmCost);
+    
+    const urgencyConfig = {
+      standard: { multiplier: 1 },
+      priority: { multiplier: 1.15 },
+      emergency: { multiplier: 1.3 },
     };
     
-    const urgencyPremium = materialCost * (urgencyMultiplier[args.urgencyLevel] - 1);
+    const urgencyData = urgencyConfig[args.urgencyLevel];
+    const urgencyPremium = materialCost * (urgencyData.multiplier - 1);
     const subtotal = materialCost + transportCost + urgencyPremium;
     const platformFee = subtotal * 0.05;
     const subtotalWithFee = subtotal + platformFee;
     const vat = subtotalWithFee * 0.16;
     const total = subtotalWithFee + vat;
-    const deposit = total * 0.4;
-    const balance = total * 0.6;
+    const depositAmount = total * 0.4;
+    const balanceAmount = total * 0.6;
     
     return {
-      materialCost,
-      transportCost,
-      urgencyPremium,
-      subtotal,
-      platformFee,
-      vat,
-      total,
-      deposit,
-      balance,
+      available: true,
+      material: {
+        name: material.name,
+        category: material.category,
+        unit: material.unit,
+        stock: material.stock,
+        minOrderQuantity: material.minOrderQuantity,
+      },
+      supplier: {
+        name: nearestSupplier.businessName,
+        distance: minDistance,
+        rating: nearestSupplier.rating,
+        deliveryRadius: nearestSupplier.deliveryRadius,
+      },
+      pricing: {
+        unitPrice,
+        materialCost,
+        transportCost,
+        urgencyPremium,
+        platformFee,
+        vat,
+        total,
+        depositAmount,
+        balanceAmount,
+        currency: "KES",
+      },
       breakdown: {
-        material: `${args.quantity} units @ KES ${args.materialPrice.toLocaleString()} each`,
-        transport: `KES ${transportCost.toLocaleString()} (base: ${baseTransportCost.toLocaleString()} + ${args.distance || 10}km @ ${perKmCost}/km)`,
-        urgency: `${args.urgencyLevel} (${urgencyMultiplier[args.urgencyLevel]}x)`,
+        material: `${args.quantity} ${material.unit} @ KES ${unitPrice.toLocaleString()} each`,
+        transport: `KES ${transportCost.toLocaleString()} (base: ${nearestSupplier.baseTransportCost.toLocaleString()} + ${minDistance.toFixed(1)}km @ ${nearestSupplier.perKmCost}/km)`,
+        urgency: `${args.urgencyLevel} (${urgencyData.multiplier}x)`,
         platformFeePercent: "5%",
         vatPercent: "16%",
         depositPercent: "40%",
@@ -272,120 +555,83 @@ export const calculatePricing = query({
   },
 });
 
-export const getOrderById = query({
+export const getMaterialsWithPricing = query({
   args: {
-    orderId: v.id("orders"),
+    category: v.optional(v.string()),
+    siteLatitude: v.number(),
+    siteLongitude: v.number(),
   },
   handler: async (ctx, args) => {
-    const order = await ctx.db.get(args.orderId);
-    if (!order) {
-      throw new Error("Order not found");
+    let query = ctx.db.query("materials");
+    
+    if (args.category) {
+      query = query.withIndex("by_category", q => q.eq("category", args.category));
+    } else {
+      query = query.filter(q => q.eq(q.field("status"), "active"));
     }
     
-    // Get related transactions
-    const transactions = await ctx.db
-      .query("transactions")
-      .filter(q => q.eq(q.field("orderId"), args.orderId))
-      .collect();
+    const materials = await query.collect();
     
-    return {
-      ...order,
-      transactions,
-    };
-  },
-});
-
-export const updateOrderStatus = mutation({
-  args: {
-    orderId: v.id("orders"),
-    status: v.union(
-      v.literal("pending_payment"),
-      v.literal("payment_received"),
-      v.literal("searching_suppliers"),
-      v.literal("assigned_to_supplier"),
-      v.literal("processing"),
-      v.literal("in_transit"),
-      v.literal("delivered"),
-      v.literal("completed"),
-      v.literal("cancelled")
-    ),
-    description: v.string(),
-    actor: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const order = await ctx.db.get(args.orderId);
-    if (!order) {
-      throw new Error("Order not found");
-    }
+    const results = await Promise.all(
+      materials.map(async (material) => {
+        // Find available supplier inventory
+        const supplierInventories = await ctx.db
+          .query("supplierInventory")
+          .withIndex("by_materialId", q => q.eq("materialId", material._id))
+          .collect();
+        
+        let minDistance = Infinity;
+        let nearestSupplier = null;
+        let nearestInventory = null;
+        
+        for (const inventory of supplierInventories) {
+          if (inventory.available) {
+            const supplier = await ctx.db.get(inventory.supplierId);
+            if (supplier && supplier.status === "active") {
+              const distance = calculateDistance(
+                supplier.location.lat,
+                supplier.location.lng,
+                args.siteLatitude,
+                args.siteLongitude
+              );
+              
+              if (distance <= supplier.deliveryRadius && distance < minDistance) {
+                minDistance = distance;
+                nearestSupplier = supplier;
+                nearestInventory = inventory;
+              }
+            }
+          }
+        }
+        
+        const transportCost = nearestSupplier 
+          ? nearestSupplier.baseTransportCost + (minDistance * nearestSupplier.perKmCost)
+          : null;
+        
+        return {
+          id: material._id,
+          name: material.name,
+          category: material.category,
+          description: material.description,
+          unit: material.unit,
+          specifications: material.specifications,
+          basePrice: material.basePrice,
+          minOrderQuantity: material.minOrderQuantity,
+          stock: material.stock,
+          images: material.images,
+          available: !!nearestSupplier,
+          estimatedDeliveryCost: transportCost,
+          supplierPrice: nearestInventory?.pricePerUnit,
+          nearestSupplier: nearestSupplier ? {
+            name: nearestSupplier.businessName,
+            distance: minDistance,
+            rating: nearestSupplier.rating,
+            deliveryRadius: nearestSupplier.deliveryRadius,
+          } : null,
+        };
+      })
+    );
     
-    const now = Date.now();
-    const newEvent = {
-      status: args.status,
-      timestamp: now,
-      description: args.description,
-      actor: args.actor || "system",
-    };
-    
-    // Update order status
-    await ctx.db.patch(args.orderId, {
-      status: args.status,
-      timeline: {
-        ...order.timeline,
-        status: args.status,
-        events: [...order.timeline.events, newEvent],
-      },
-    });
-    
-    // If status is delivered, update proof
-    if (args.status === "delivered") {
-      await ctx.db.patch(args.orderId, {
-        proof: {
-          ...order.proof,
-          codeUsed: true,
-          codeUsedAt: now,
-        },
-      });
-    }
-    
-    return {
-      success: true,
-      orderId: args.orderId,
-      newStatus: args.status,
-      timestamp: now,
-    };
-  },
-});
-
-export const getUserOrders = query({
-  args: {
-    buyerEmail: v.string(),
-    limit: v.optional(v.number()),
-    status: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const limit = args.limit || 50;
-    
-    let query = ctx.db
-      .query("orders")
-      .filter(q => q.eq(q.field("buyer.email"), args.buyerEmail));
-    
-    // Filter by status if provided
-    if (args.status) {
-      query = query.filter(q => q.eq(q.field("status"), args.status));
-    }
-    
-    const orders = await query
-      .order("desc")
-      .take(limit);
-    
-    return orders.map(order => ({
-      id: order._id,
-      orderNumber: order.orderNumber,
-      status: order.status,
-      material: order.material,
-      pricing: order.pricing,
-      timeline: order.timeline,
-      createdAt: order.timeline.createdAt,
-    }));
+    return results;
   },
 });

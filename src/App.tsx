@@ -4,6 +4,8 @@ import Login from './pages/auth/Login';
 import SignUpPage from './pages/auth/SignUp';
 import Dashboard from './pages/Dashboard';
 import CreateOrder from './pages/orders/CreateOrder';
+import SupplierDashboard from './pages/supplier/SupplierDashboard';
+import SupplierOrderDetails from './pages/supplier/OrderDetails';
 
 function App() {
   return (
@@ -13,7 +15,7 @@ function App() {
         <Route path="/sign-in/*" element={<Login />} />
         <Route path="/sign-up/*" element={<SignUpPage />} />
         
-        {/* Protected routes */}
+        {/* Buyer routes */}
         <Route
           path="/dashboard"
           element={
@@ -34,6 +36,35 @@ function App() {
             <>
               <SignedIn>
                 <CreateOrder />
+              </SignedIn>
+              <SignedOut>
+                <Navigate to="/sign-in" replace />
+              </SignedOut>
+            </>
+          }
+        />
+        
+        {/* Supplier routes */}
+        <Route
+          path="/supplier/dashboard"
+          element={
+            <>
+              <SignedIn>
+                <SupplierDashboard />
+              </SignedIn>
+              <SignedOut>
+                <Navigate to="/sign-in" replace />
+              </SignedOut>
+            </>
+          }
+        />
+        
+        <Route
+          path="/supplier/orders/:orderId"
+          element={
+            <>
+              <SignedIn>
+                <SupplierOrderDetails />
               </SignedIn>
               <SignedOut>
                 <Navigate to="/sign-in" replace />

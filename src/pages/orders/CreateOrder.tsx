@@ -22,7 +22,7 @@ interface OrderData {
 export default function CreateOrder() {
   const navigate = useNavigate();
   const { user } = useUser();
-  const createOrderMutation = useMutation(api.orders.create.createOrder);
+  const createOrderMutation = useMutation(api.orders_create.createOrder);
   
   const [step, setStep] = useState<OrderStep>('material');
   const [isSubmitting, setIsSubmitting] = useState(false);

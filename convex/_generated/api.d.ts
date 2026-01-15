@@ -9,9 +9,12 @@
  */
 
 import type * as orders_create from "../orders/create.js";
-import type * as orders_mutations from "../orders/mutations.js";
-import type * as suppliers_SupplierNotification from "../suppliers/SupplierNotification.js";
+import type * as simple from "../simple.js";
+import type * as suppliers_OrderDetails from "../suppliers/OrderDetails.js";
+import type * as suppliers_SupplierDashboard from "../suppliers/SupplierDashboard.js";
 import type * as suppliers_matching from "../suppliers/matching.js";
+import type * as suppliers_mutations from "../suppliers/mutations.js";
+import type * as suppliers_queries from "../suppliers/queries.js";
 
 import type {
   ApiFromModules,
@@ -21,9 +24,12 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   "orders/create": typeof orders_create;
-  "orders/mutations": typeof orders_mutations;
-  "suppliers/SupplierNotification": typeof suppliers_SupplierNotification;
+  simple: typeof simple;
+  "suppliers/OrderDetails": typeof suppliers_OrderDetails;
+  "suppliers/SupplierDashboard": typeof suppliers_SupplierDashboard;
   "suppliers/matching": typeof suppliers_matching;
+  "suppliers/mutations": typeof suppliers_mutations;
+  "suppliers/queries": typeof suppliers_queries;
 }>;
 
 /**
