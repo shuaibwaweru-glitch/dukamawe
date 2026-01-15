@@ -5,6 +5,7 @@ import { ConvexProviderWithClerk } from "convex/react-clerk";
 import { ConvexReactClient } from "convex/react";
 import App from './App.tsx'
 import './index.css'
+import './styles/brutal-design-system.css';
 
 const convexUrl = import.meta.env.VITE_CONVEX_URL as string;
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string;

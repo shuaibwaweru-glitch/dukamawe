@@ -8,7 +8,12 @@
  * @module
  */
 
+import type * as buyers_mutations from "../buyers/mutations.js";
+import type * as orders from "../orders.js";
 import type * as orders_create from "../orders/create.js";
+import type * as orders_queries from "../orders/queries.js";
+import type * as seed from "../seed.js";
+import type * as seedMaterials from "../seedMaterials.js";
 import type * as simple from "../simple.js";
 import type * as suppliers_OrderDetails from "../suppliers/OrderDetails.js";
 import type * as suppliers_SupplierDashboard from "../suppliers/SupplierDashboard.js";
@@ -23,7 +28,12 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  "buyers/mutations": typeof buyers_mutations;
+  orders: typeof orders;
   "orders/create": typeof orders_create;
+  "orders/queries": typeof orders_queries;
+  seed: typeof seed;
+  seedMaterials: typeof seedMaterials;
   simple: typeof simple;
   "suppliers/OrderDetails": typeof suppliers_OrderDetails;
   "suppliers/SupplierDashboard": typeof suppliers_SupplierDashboard;

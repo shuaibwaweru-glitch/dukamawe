@@ -1,130 +1,120 @@
 // src/pages/orders/CreateOrder.tsx
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useUser } from "@clerk/clerk-react";
-import { useMutation } from "convex/react";
-import { api } from "../../../convex/_generated/api";
-import MaterialCatalog, { Material } from '../../components/MaterialCatalog';
+import { useUser } from '@clerk/clerk-react';
+import { useMutation, useQuery } from 'convex/react';
+import { api } from '../../../convex/_generated/api';
 
-type OrderStep = 'material' | 'details' | 'review';
-type UrgencyLevel = 'standard' | 'priority' | 'emergency';
-
-interface OrderData {
-  material: Material | null;
-  specification: string;
+// Inline OrderForm component to avoid import issues
+interface OrderFormData {
+  materialId: string;
   quantity: number;
-  urgency: UrgencyLevel;
+  urgency: 'standard' | 'priority' | 'emergency';
   site: string;
   deliveryDate: string;
   instructions: string;
 }
 
+interface MaterialOption {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  unit: string;
+  basePrice: number;
+  available: boolean;
+  stock: number;
+}
+
 export default function CreateOrder() {
-  const navigate = useNavigate();
   const { user } = useUser();
-  const createOrderMutation = useMutation(api.orders_create.createOrder);
-  
-  const [step, setStep] = useState<OrderStep>('material');
+  const navigate = useNavigate();
+  const [step, setStep] = useState<'form' | 'review'>('form');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [orderData, setOrderData] = useState<OrderData>({
-    material: null,
-    specification: '',
+  
+  // Form state
+  const [selectedMaterial, setSelectedMaterial] = useState<MaterialOption | null>(null);
+  const [formData, setFormData] = useState<OrderFormData>({
+    materialId: '',
     quantity: 1,
     urgency: 'standard',
     site: '',
     deliveryDate: '',
-    instructions: ''
+    instructions: '',
   });
 
-  const handleMaterialSelect = (material: Material) => {
-    setOrderData({ ...orderData, material, specification: material.specifications[0] });
-    setStep('details');
+  // Auto-create buyer profile
+  const createOrUpdateBuyer = useMutation(api.buyers.mutations.createOrUpdateBuyer);
+  
+  useEffect(() => {
+    const initBuyer = async () => {
+      if (user) {
+        try {
+          await createOrUpdateBuyer({
+            clerkId: user.id,
+            email: user.primaryEmailAddress?.emailAddress || "",
+            displayName: user.fullName || user.firstName || "Buyer",
+            phone: user.primaryPhoneNumber?.phoneNumber,
+          });
+        } catch (error) {
+          console.error("Failed to create buyer:", error);
+        }
+      }
+    };
+    initBuyer();
+  }, [user, createOrUpdateBuyer]);
+
+  // Get materials
+  const materials = useQuery(api.orders.create.getMaterialsWithPricing, {
+    siteLatitude: -1.286389,
+    siteLongitude: 36.817223,
+  });
+
+  const createOrder = useMutation(api.orders.create.createOrder);
+
+  const handleMaterialSelect = (material: MaterialOption) => {
+    setSelectedMaterial(material);
+    setFormData(prev => ({ ...prev, materialId: material.id }));
   };
 
-  const calculatePricing = () => {
-    if (!orderData.material) return null;
+  const handleConfirmOrder = async () => {
+    if (!user || !formData.materialId || !formData.site || !formData.deliveryDate) {
+      alert('Please fill all required fields');
+      return;
+    }
 
-    const materialCost = orderData.material.basePrice * orderData.quantity;
-    const transportCost = Math.ceil(orderData.quantity * 500);
-    
-    const urgencyMultiplier = {
-      standard: 1,
-      priority: 1.15,
-      emergency: 1.3
-    };
-    const urgencyPremium = materialCost * (urgencyMultiplier[orderData.urgency] - 1);
-    
-    const subtotal = materialCost + transportCost + urgencyPremium;
-    const platformFee = subtotal * 0.05;
-    const subtotalWithFee = subtotal + platformFee;
-    const vat = subtotalWithFee * 0.16;
-    const total = subtotalWithFee + vat;
-    
-    const deposit = total * 0.4;
-    const balance = total * 0.6;
-
-    return {
-      materialCost,
-      transportCost,
-      urgencyPremium,
-      subtotal,
-      platformFee,
-      vat,
-      total,
-      deposit,
-      balance
-    };
-  };
-
-  const handleCreateOrder = async () => {
-    if (!orderData.material || !pricing || !user) return;
-    
     setIsSubmitting(true);
-    
     try {
-      const result = await createOrderMutation({
+      const result = await createOrder({
         buyerClerkId: user.id,
-        buyerName: user.fullName || user.firstName || "User",
-        buyerEmail: user.primaryEmailAddress?.emailAddress || "",
-        buyerPhone: user.phoneNumbers?.[0]?.phoneNumber,
-        
-        materialId: orderData.material.id,
-        materialName: orderData.material.name,
-        materialCategory: orderData.material.category,
-        specification: orderData.specification,
-        quantity: orderData.quantity,
-        unit: orderData.material.unit,
-        
-        siteName: orderData.site,
-        siteAddress: orderData.site,
-        deliveryDate: orderData.deliveryDate,
-        urgencyLevel: orderData.urgency,
-        instructions: orderData.instructions,
-        
-        materialCost: pricing.materialCost,
-        transportCost: pricing.transportCost,
-        urgencyPremium: pricing.urgencyPremium,
-        platformFee: pricing.platformFee,
-        vat: pricing.vat,
-        total: pricing.total,
-        depositAmount: pricing.deposit,
-        balanceAmount: pricing.balance,
+        materialId: formData.materialId,
+        quantity: formData.quantity,
+        siteAddress: formData.site,
+        siteName: formData.site,
+        deliveryDate: formData.deliveryDate,
+        urgencyLevel: formData.urgency,
+        instructions: formData.instructions || "",
+        siteLatitude: -1.286389,
+        siteLongitude: 36.817223,
       });
-      
-      alert(`✅ Order Created Successfully!\n\nOrder Number: ${result.orderNumber}\nDeposit: KES ${result.depositAmount.toLocaleString()}\nRelease Code: ${result.releaseCode}\n\n🚀 Next: M-Pesa payment integration!`);
-      
-      // Navigate back to dashboard
+
+      alert(`✅ Order created successfully! Order #${result.orderNumber}`);
       navigate('/dashboard');
-      
     } catch (error) {
-      console.error("Error creating order:", error);
-      alert("❌ Failed to create order. Please try again.");
+      console.error('Error creating order:', error);
+      alert('❌ Failed to create order: ' + (error as Error).message);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const pricing = calculatePricing();
+  if (!user) {
+    return <div style={{ padding: '2rem', textAlign: 'center' }}>Loading user data...</div>;
+  }
+
+  if (!materials) {
+    return <div style={{ padding: '2rem', textAlign: 'center' }}>Loading materials...</div>;
+  }
 
   return (
     <div style={{
@@ -132,10 +122,7 @@ export default function CreateOrder() {
       background: 'linear-gradient(135deg, #F57C00 0%, #13445C 100%)',
       padding: '2rem'
     }}>
-      <div style={{
-        maxWidth: '1200px',
-        margin: '0 auto'
-      }}>
+      <div style={{ maxWidth: '900px', margin: '0 auto' }}>
         {/* Header */}
         <div style={{
           display: 'flex',
@@ -153,15 +140,15 @@ export default function CreateOrder() {
               Create New Order
             </h1>
             <p style={{ color: 'rgba(255,255,255,0.8)' }}>
-              Step {step === 'material' ? '1' : step === 'details' ? '2' : '3'} of 3
+              Step {step === 'form' ? '1-2' : '3'} of 3
             </p>
           </div>
           <button
             onClick={() => navigate('/dashboard')}
             style={{
-              background: 'white',
-              color: '#13445C',
-              border: 'none',
+              background: 'rgba(255,255,255,0.2)',
+              color: 'white',
+              border: '1px solid rgba(255,255,255,0.3)',
               padding: '0.75rem 1.5rem',
               borderRadius: '8px',
               fontWeight: '600',
@@ -172,99 +159,128 @@ export default function CreateOrder() {
           </button>
         </div>
 
-        {/* Progress Bar */}
+        {/* Main Content */}
         <div style={{
           background: 'white',
-          borderRadius: '12px',
-          padding: '1.5rem',
-          marginBottom: '2rem'
+          borderRadius: '16px',
+          padding: '2rem'
         }}>
-          <div style={{ display: 'flex', gap: '1rem' }}>
-            <StepIndicator
-              number={1}
-              title="Select Material"
-              active={step === 'material'}
-              completed={step !== 'material'}
-            />
-            <StepIndicator
-              number={2}
-              title="Order Details"
-              active={step === 'details'}
-              completed={step === 'review'}
-            />
-            <StepIndicator
-              number={3}
-              title="Review & Pay"
-              active={step === 'review'}
-              completed={false}
-            />
-          </div>
-        </div>
+          {step === 'form' && (
+            <>
+              {/* Material Selection */}
+              {!selectedMaterial && (
+                <div>
+                  <h3 style={{
+                    fontSize: '1.25rem',
+                    fontWeight: 'bold',
+                    color: '#13445C',
+                    marginBottom: '1rem'
+                  }}>
+                    Select Material
+                  </h3>
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                    gap: '1rem'
+                  }}>
+                    {materials.map((material: MaterialOption) => (
+                      <div
+                        key={material.id}
+                        onClick={() => material.available && handleMaterialSelect(material)}
+                        style={{
+                          background: '#f8f9fa',
+                          borderRadius: '12px',
+                          padding: '1.5rem',
+                          cursor: material.available ? 'pointer' : 'not-allowed',
+                          opacity: material.available ? 1 : 0.5,
+                          border: '2px solid transparent',
+                          transition: 'all 0.2s'
+                        }}
+                        onMouseEnter={(e) => {
+                          if (material.available) {
+                            e.currentTarget.style.borderColor = '#F57C00';
+                            e.currentTarget.style.transform = 'translateY(-4px)';
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = 'transparent';
+                          e.currentTarget.style.transform = 'translateY(0)';
+                        }}
+                      >
+                        <div style={{ fontSize: '2.5rem', marginBottom: '0.75rem' }}>
+                          🏗️
+                        </div>
+                        <h4 style={{
+                          fontSize: '1.1rem',
+                          fontWeight: 'bold',
+                          color: '#13445C',
+                          marginBottom: '0.5rem'
+                        }}>
+                          {material.name}
+                        </h4>
+                        <p style={{ color: '#666', fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+                          {material.description}
+                        </p>
+                        <div style={{
+                          fontSize: '1.1rem',
+                          fontWeight: 'bold',
+                          color: '#F57C00',
+                          marginBottom: '0.5rem'
+                        }}>
+                          KES {material.basePrice.toLocaleString()} / {material.unit}
+                        </div>
+                        {material.available ? (
+                          <div style={{ color: '#4CAF50', fontSize: '0.8rem' }}>
+                            ✓ Available • Stock: {material.stock}
+                          </div>
+                        ) : (
+                          <div style={{ color: '#F44336', fontSize: '0.8rem' }}>
+                            ✗ Out of stock
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-        {/* Main Content */}
-        <div style={{ display: 'grid', gridTemplateColumns: orderData.material ? '1fr 400px' : '1fr', gap: '2rem' }}>
-          {/* Left Column - Form */}
-          <div>
-            {step === 'material' && (
-              <div style={{
-                background: 'white',
-                borderRadius: '16px',
-                padding: '2rem'
-              }}>
-                <h2 style={{
-                  fontSize: '1.5rem',
-                  fontWeight: 'bold',
-                  color: '#13445C',
-                  marginBottom: '1.5rem'
-                }}>
-                  Choose Your Material
-                </h2>
-                <MaterialCatalog onSelect={handleMaterialSelect} />
-              </div>
-            )}
-
-            {step === 'details' && orderData.material && (
-              <div style={{
-                background: 'white',
-                borderRadius: '16px',
-                padding: '2rem'
-              }}>
-                <h2 style={{
-                  fontSize: '1.5rem',
-                  fontWeight: 'bold',
-                  color: '#13445C',
-                  marginBottom: '1.5rem'
-                }}>
-                  Order Details
-                </h2>
-
+              {/* Order Details Form */}
+              {selectedMaterial && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-                  {/* Specification */}
-                  <div>
-                    <label style={{
-                      display: 'block',
-                      fontWeight: '600',
-                      marginBottom: '0.5rem',
-                      color: '#13445C'
-                    }}>
-                      Specification
-                    </label>
-                    <select
-                      value={orderData.specification}
-                      onChange={(e) => setOrderData({ ...orderData, specification: e.target.value })}
+                  {/* Selected Material */}
+                  <div style={{
+                    background: '#f8f9fa',
+                    borderRadius: '12px',
+                    padding: '1rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '1rem'
+                  }}>
+                    <div style={{ fontSize: '2.5rem' }}>🏗️</div>
+                    <div>
+                      <div style={{ fontWeight: '600', color: '#13445C' }}>
+                        {selectedMaterial.name}
+                      </div>
+                      <div style={{ fontSize: '0.9rem', color: '#666' }}>
+                        {selectedMaterial.description}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedMaterial(null)}
                       style={{
-                        width: '100%',
-                        padding: '0.75rem',
-                        borderRadius: '8px',
-                        border: '2px solid #e0e0e0',
-                        fontSize: '1rem',
-                        outline: 'none'
+                        marginLeft: 'auto',
+                        background: 'none',
+                        border: '1px solid #e0e0e0',
+                        borderRadius: '6px',
+                        padding: '0.5rem 1rem',
+                        fontSize: '0.85rem',
+                        color: '#666',
+                        cursor: 'pointer'
                       }}
                     >
-                      {orderData.material.specifications.map(spec => (
-                        <option key={spec} value={spec}>{spec}</option>
-                      ))}
-                    </select>
+                      Change Material
+                    </button>
                   </div>
 
                   {/* Quantity */}
@@ -275,25 +291,25 @@ export default function CreateOrder() {
                       marginBottom: '0.5rem',
                       color: '#13445C'
                     }}>
-                      Quantity ({orderData.material.unit})
+                      Quantity ({selectedMaterial.unit})
                     </label>
                     <input
                       type="number"
                       min="1"
-                      value={orderData.quantity}
-                      onChange={(e) => setOrderData({ ...orderData, quantity: parseInt(e.target.value) || 1 })}
+                      max={selectedMaterial.stock}
+                      value={formData.quantity}
+                      onChange={(e) => setFormData({ ...formData, quantity: Math.max(1, parseInt(e.target.value) || 1) })}
                       style={{
                         width: '100%',
                         padding: '0.75rem',
                         borderRadius: '8px',
                         border: '2px solid #e0e0e0',
-                        fontSize: '1rem',
-                        outline: 'none'
+                        fontSize: '1rem'
                       }}
                     />
                   </div>
 
-                  {/* Urgency Level */}
+                  {/* Site */}
                   <div>
                     <label style={{
                       display: 'block',
@@ -301,55 +317,20 @@ export default function CreateOrder() {
                       marginBottom: '0.5rem',
                       color: '#13445C'
                     }}>
-                      Delivery Urgency
-                    </label>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
-                      <UrgencyButton
-                        level="standard"
-                        label="Standard"
-                        subtitle="2-3 days"
-                        selected={orderData.urgency === 'standard'}
-                        onClick={() => setOrderData({ ...orderData, urgency: 'standard' })}
-                      />
-                      <UrgencyButton
-                        level="priority"
-                        label="Priority"
-                        subtitle="24 hours"
-                        selected={orderData.urgency === 'priority'}
-                        onClick={() => setOrderData({ ...orderData, urgency: 'priority' })}
-                      />
-                      <UrgencyButton
-                        level="emergency"
-                        label="Emergency"
-                        subtitle="Same day"
-                        selected={orderData.urgency === 'emergency'}
-                        onClick={() => setOrderData({ ...orderData, urgency: 'emergency' })}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Delivery Site */}
-                  <div>
-                    <label style={{
-                      display: 'block',
-                      fontWeight: '600',
-                      marginBottom: '0.5rem',
-                      color: '#13445C'
-                    }}>
-                      Delivery Site
+                      Delivery Site *
                     </label>
                     <input
                       type="text"
                       placeholder="Enter site name or address"
-                      value={orderData.site}
-                      onChange={(e) => setOrderData({ ...orderData, site: e.target.value })}
+                      value={formData.site}
+                      onChange={(e) => setFormData({ ...formData, site: e.target.value })}
+                      required
                       style={{
                         width: '100%',
                         padding: '0.75rem',
                         borderRadius: '8px',
                         border: '2px solid #e0e0e0',
-                        fontSize: '1rem',
-                        outline: 'none'
+                        fontSize: '1rem'
                       }}
                     />
                   </div>
@@ -362,25 +343,62 @@ export default function CreateOrder() {
                       marginBottom: '0.5rem',
                       color: '#13445C'
                     }}>
-                      Preferred Delivery Date
+                      Delivery Date *
                     </label>
                     <input
                       type="date"
-                      value={orderData.deliveryDate}
-                      onChange={(e) => setOrderData({ ...orderData, deliveryDate: e.target.value })}
+                      value={formData.deliveryDate}
+                      onChange={(e) => setFormData({ ...formData, deliveryDate: e.target.value })}
                       min={new Date().toISOString().split('T')[0]}
+                      required
                       style={{
                         width: '100%',
                         padding: '0.75rem',
                         borderRadius: '8px',
                         border: '2px solid #e0e0e0',
-                        fontSize: '1rem',
-                        outline: 'none'
+                        fontSize: '1rem'
                       }}
                     />
                   </div>
 
-                  {/* Special Instructions */}
+                  {/* Urgency */}
+                  <div>
+                    <label style={{
+                      display: 'block',
+                      fontWeight: '600',
+                      marginBottom: '0.5rem',
+                      color: '#13445C'
+                    }}>
+                      Delivery Urgency
+                    </label>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
+                      {(['standard', 'priority', 'emergency'] as const).map((level) => (
+                        <button
+                          type="button"
+                          key={level}
+                          onClick={() => setFormData({ ...formData, urgency: level })}
+                          style={{
+                            padding: '1rem',
+                            borderRadius: '8px',
+                            border: `2px solid ${formData.urgency === level ? '#F57C00' : '#e0e0e0'}`,
+                            background: formData.urgency === level ? '#FFF3E0' : 'white',
+                            cursor: 'pointer',
+                            textAlign: 'center'
+                          }}
+                        >
+                          <div style={{
+                            fontWeight: '600',
+                            color: formData.urgency === level ? '#F57C00' : '#666',
+                            textTransform: 'capitalize'
+                          }}>
+                            {level}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Instructions */}
                   <div>
                     <label style={{
                       display: 'block',
@@ -392,8 +410,8 @@ export default function CreateOrder() {
                     </label>
                     <textarea
                       placeholder="Any specific delivery instructions..."
-                      value={orderData.instructions}
-                      onChange={(e) => setOrderData({ ...orderData, instructions: e.target.value })}
+                      value={formData.instructions}
+                      onChange={(e) => setFormData({ ...formData, instructions: e.target.value })}
                       rows={3}
                       style={{
                         width: '100%',
@@ -401,344 +419,99 @@ export default function CreateOrder() {
                         borderRadius: '8px',
                         border: '2px solid #e0e0e0',
                         fontSize: '1rem',
-                        outline: 'none',
                         resize: 'vertical'
                       }}
                     />
                   </div>
 
-                  {/* Buttons */}
-                  <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
-                    <button
-                      onClick={() => {
-                        setOrderData({ ...orderData, material: null });
-                        setStep('material');
-                      }}
-                      style={{
-                        flex: 1,
-                        padding: '1rem',
-                        borderRadius: '8px',
-                        border: '2px solid #e0e0e0',
-                        background: 'white',
-                        color: '#666',
-                        fontWeight: '600',
-                        fontSize: '1rem',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      ← Back
-                    </button>
-                    <button
-                      onClick={() => setStep('review')}
-                      disabled={!orderData.site || !orderData.deliveryDate}
-                      style={{
-                        flex: 2,
-                        padding: '1rem',
-                        borderRadius: '8px',
-                        border: 'none',
-                        background: orderData.site && orderData.deliveryDate ? '#F57C00' : '#ccc',
-                        color: 'white',
-                        fontWeight: '600',
-                        fontSize: '1rem',
-                        cursor: orderData.site && orderData.deliveryDate ? 'pointer' : 'not-allowed'
-                      }}
-                    >
-                      Continue to Review →
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {step === 'review' && orderData.material && pricing && (
-              <div style={{
-                background: 'white',
-                borderRadius: '16px',
-                padding: '2rem'
-              }}>
-                <h2 style={{
-                  fontSize: '1.5rem',
-                  fontWeight: 'bold',
-                  color: '#13445C',
-                  marginBottom: '1.5rem'
-                }}>
-                  Review Your Order
-                </h2>
-
-                {/* Order Summary */}
-                <div style={{
-                  background: '#f8f9fa',
-                  borderRadius: '12px',
-                  padding: '1.5rem',
-                  marginBottom: '2rem'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
-                    <div style={{ fontSize: '3rem' }}>{orderData.material.icon}</div>
-                    <div>
-                      <h3 style={{
-                        fontSize: '1.25rem',
-                        fontWeight: 'bold',
-                        color: '#13445C'
-                      }}>
-                        {orderData.material.name}
-                      </h3>
-                      <p style={{ color: '#666', fontSize: '0.9rem' }}>
-                        {orderData.specification} • {orderData.quantity} {orderData.material.unit}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div style={{ paddingTop: '1rem', borderTop: '1px solid #e0e0e0' }}>
-                    <InfoRow label="Delivery Site" value={orderData.site} />
-                    <InfoRow label="Delivery Date" value={orderData.deliveryDate} />
-                    <InfoRow
-                      label="Urgency"
-                      value={orderData.urgency.charAt(0).toUpperCase() + orderData.urgency.slice(1)}
-                    />
-                  </div>
-                </div>
-
-                {/* Price Breakdown */}
-                <div style={{
-                  background: '#fff',
-                  border: '2px solid #e0e0e0',
-                  borderRadius: '12px',
-                  padding: '1.5rem',
-                  marginBottom: '2rem'
-                }}>
-                  <h3 style={{
-                    fontSize: '1.1rem',
-                    fontWeight: 'bold',
-                    color: '#13445C',
-                    marginBottom: '1rem'
-                  }}>
-                    Price Breakdown
-                  </h3>
-                  <PriceRow label="Material Cost" value={pricing.materialCost} />
-                  <PriceRow label="Transport Cost" value={pricing.transportCost} />
-                  {pricing.urgencyPremium > 0 && (
-                    <PriceRow label="Urgency Premium" value={pricing.urgencyPremium} />
-                  )}
-                  <PriceRow label="Platform Fee (5%)" value={pricing.platformFee} />
-                  <PriceRow label="VAT (16%)" value={pricing.vat} />
-                  <div style={{
-                    borderTop: '2px solid #13445C',
-                    marginTop: '1rem',
-                    paddingTop: '1rem'
-                  }}>
-                    <PriceRow label="TOTAL" value={pricing.total} bold />
-                  </div>
-                  <div style={{
-                    background: '#f8f9fa',
-                    borderRadius: '8px',
-                    padding: '1rem',
-                    marginTop: '1rem'
-                  }}>
-                    <PriceRow label="Deposit (40%)" value={pricing.deposit} color="#F57C00" />
-                    <PriceRow label="Balance on Delivery (60%)" value={pricing.balance} color="#666" />
-                  </div>
-                </div>
-
-                {/* Action Buttons */}
-                <div style={{ display: 'flex', gap: '1rem' }}>
+                  {/* Submit Button */}
                   <button
-                    onClick={() => setStep('details')}
-                    disabled={isSubmitting}
+                    onClick={() => setStep('review')}
+                    disabled={!formData.site || !formData.deliveryDate}
                     style={{
-                      flex: 1,
-                      padding: '1rem',
-                      borderRadius: '8px',
-                      border: '2px solid #e0e0e0',
-                      background: 'white',
-                      color: '#666',
-                      fontWeight: '600',
-                      fontSize: '1rem',
-                      cursor: isSubmitting ? 'not-allowed' : 'pointer'
-                    }}
-                  >
-                    ← Edit Order
-                  </button>
-                  <button
-                    onClick={handleCreateOrder}
-                    disabled={isSubmitting}
-                    style={{
-                      flex: 2,
                       padding: '1rem',
                       borderRadius: '8px',
                       border: 'none',
-                      background: isSubmitting ? '#ccc' : 'linear-gradient(135deg, #F57C00 0%, #FF9800 100%)',
+                      background: (!formData.site || !formData.deliveryDate) ? '#ccc' : '#F57C00',
                       color: 'white',
                       fontWeight: '600',
                       fontSize: '1rem',
-                      cursor: isSubmitting ? 'not-allowed' : 'pointer'
+                      cursor: (!formData.site || !formData.deliveryDate) ? 'not-allowed' : 'pointer'
                     }}
                   >
-                    {isSubmitting ? '⏳ Creating Order...' : `💳 Create Order (KES ${pricing.deposit.toLocaleString()} deposit)`}
+                    Continue to Review →
                   </button>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </>
+          )}
 
-          {/* Right Column - Order Summary (Sticky) */}
-          {orderData.material && pricing && (
-            <div style={{
-              position: 'sticky',
-              top: '2rem',
-              height: 'fit-content'
-            }}>
-              <div style={{
-                background: 'white',
-                borderRadius: '16px',
-                padding: '1.5rem',
-                boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
+          {step === 'review' && selectedMaterial && (
+            <div>
+              <h2 style={{
+                fontSize: '1.5rem',
+                fontWeight: 'bold',
+                color: '#13445C',
+                marginBottom: '1.5rem'
               }}>
-                <h3 style={{
-                  fontSize: '1.1rem',
-                  fontWeight: 'bold',
-                  color: '#13445C',
-                  marginBottom: '1rem'
-                }}>
-                  Order Summary
-                </h3>
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.75rem',
-                  padding: '1rem',
-                  background: '#f8f9fa',
-                  borderRadius: '8px',
-                  marginBottom: '1rem'
-                }}>
-                  <div style={{ fontSize: '2rem' }}>{orderData.material.icon}</div>
-                  <div>
-                    <div style={{ fontWeight: '600', color: '#13445C' }}>
-                      {orderData.material.name}
-                    </div>
-                    <div style={{ fontSize: '0.85rem', color: '#666' }}>
-                      {orderData.quantity} {orderData.material.unit}
-                    </div>
-                  </div>
+                Review Your Order
+              </h2>
+
+              {/* Order Summary */}
+              <div style={{
+                background: '#f8f9fa',
+                borderRadius: '12px',
+                padding: '1.5rem',
+                marginBottom: '2rem'
+              }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                  <div><strong>Material:</strong> {selectedMaterial.name}</div>
+                  <div><strong>Quantity:</strong> {formData.quantity} {selectedMaterial.unit}</div>
+                  <div><strong>Site:</strong> {formData.site}</div>
+                  <div><strong>Date:</strong> {formData.deliveryDate}</div>
+                  <div><strong>Urgency:</strong> {formData.urgency}</div>
+                  <div><strong>Price:</strong> KES {(selectedMaterial.basePrice * formData.quantity * 1.21).toFixed(0)}</div>
                 </div>
-                <div style={{
-                  fontSize: '1.75rem',
-                  fontWeight: 'bold',
-                  color: '#F57C00',
-                  textAlign: 'center',
-                  padding: '1rem 0',
-                  borderTop: '1px solid #e0e0e0'
-                }}>
-                  KES {pricing.total.toLocaleString()}
-                </div>
-                <div style={{
-                  fontSize: '0.85rem',
-                  color: '#666',
-                  textAlign: 'center'
-                }}>
-                  Pay KES {pricing.deposit.toLocaleString()} deposit now
-                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                <button
+                  onClick={() => setStep('form')}
+                  style={{
+                    flex: 1,
+                    padding: '1rem',
+                    borderRadius: '8px',
+                    border: '2px solid #e0e0e0',
+                    background: 'white',
+                    color: '#13445C',
+                    fontWeight: '600',
+                    cursor: 'pointer'
+                  }}
+                >
+                  ← Edit Order
+                </button>
+                <button
+                  onClick={handleConfirmOrder}
+                  disabled={isSubmitting}
+                  style={{
+                    flex: 2,
+                    padding: '1rem',
+                    borderRadius: '8px',
+                    border: 'none',
+                    background: isSubmitting ? '#ccc' : '#F57C00',
+                    color: 'white',
+                    fontWeight: '600',
+                    cursor: isSubmitting ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  {isSubmitting ? '⏳ Creating Order...' : '✓ Confirm & Create Order'}
+                </button>
               </div>
             </div>
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-// Helper Components
-function StepIndicator({ number, title, active, completed }: any) {
-  return (
-    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-      <div style={{
-        width: '40px',
-        height: '40px',
-        borderRadius: '50%',
-        background: completed ? '#4CAF50' : active ? '#F57C00' : '#e0e0e0',
-        color: 'white',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontWeight: 'bold'
-      }}>
-        {completed ? '✓' : number}
-      </div>
-      <div style={{ flex: 1 }}>
-        <div style={{
-          fontWeight: '600',
-          color: active ? '#13445C' : '#999',
-          fontSize: '0.9rem'
-        }}>
-          {title}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function UrgencyButton({ level, label, subtitle, selected, onClick }: any) {
-  const colors: any = {
-    standard: '#4CAF50',
-    priority: '#FF9800',
-    emergency: '#F44336'
-  };
-
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        padding: '1rem',
-        borderRadius: '8px',
-        border: `2px solid ${selected ? colors[level] : '#e0e0e0'}`,
-        background: selected ? `${colors[level]}15` : 'white',
-        cursor: 'pointer',
-        textAlign: 'center',
-        transition: 'all 0.2s'
-      }}
-    >
-      <div style={{
-        fontWeight: '600',
-        color: selected ? colors[level] : '#666',
-        marginBottom: '0.25rem'
-      }}>
-        {label}
-      </div>
-      <div style={{
-        fontSize: '0.75rem',
-        color: '#999'
-      }}>
-        {subtitle}
-      </div>
-    </button>
-  );
-}
-
-function InfoRow({ label, value }: any) {
-  return (
-    <div style={{
-      display: 'flex',
-      justifyContent: 'space-between',
-      padding: '0.5rem 0',
-      fontSize: '0.9rem'
-    }}>
-      <span style={{ color: '#666' }}>{label}:</span>
-      <span style={{ fontWeight: '600', color: '#13445C' }}>{value}</span>
-    </div>
-  );
-}
-
-function PriceRow({ label, value, bold, color }: any) {
-  return (
-    <div style={{
-      display: 'flex',
-      justifyContent: 'space-between',
-      padding: '0.5rem 0',
-      fontSize: bold ? '1.1rem' : '0.95rem',
-      fontWeight: bold ? 'bold' : 'normal',
-      color: color || '#13445C'
-    }}>
-      <span>{label}</span>
-      <span>KES {value.toLocaleString()}</span>
     </div>
   );
 }
